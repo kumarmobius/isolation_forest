@@ -1,4 +1,4 @@
-name: Anomaly Detection Training v2.0
+name: Anomaly Detection Training v2.1
 inputs:
   - {name: preprocessed_data, type: Dataset, description: "Preprocessed features from preprocessing step"}
   - {name: model_name, type: String, description: "Model type: 'isolationforest' or 'rcf'", optional: true, default: "isolationforest"}
@@ -165,6 +165,13 @@ implementation:
         
         # ==================== RCF TRAINING ====================
         def train_rcf(X, num_trees, tree_size, shingle_size, percentile, random_state, verbose):
+            try:
+                import rrcf
+            except ImportError:
+                print("[ERROR] rrcf library not installed. Installing...", file=sys.stderr)
+                import subprocess
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "rrcf", "--break-system-packages"])
+                import rrcf
             print(f"[INFO] Building RCF with {num_trees} trees, tree_size={tree_size}")
             
             np.random.seed(random_state)
