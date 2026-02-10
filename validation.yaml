@@ -1,4 +1,4 @@
-name: Anomaly Detection Validation v1.0
+name: Anomaly Detection Validation v1.1
 inputs:
   - {name: trained_model, type: Model, description: "Trained model (Isolation Forest or RCF)"}
   - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
@@ -12,6 +12,12 @@ outputs:
 
 implementation:
   container:
+      - sh
+      - -c
+      - |
+        PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location \
+          'rrcf>=0.4.4' \
+          'scipy>=1.11.0'
     image: gurpreetgandhi/nesy-factory:vtest4
     command:
       - python3
