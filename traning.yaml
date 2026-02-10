@@ -1,4 +1,4 @@
-name: Anomaly Detection Training v2.1
+name: Anomaly Detection Training v2.2
 inputs:
   - {name: preprocessed_data, type: Dataset, description: "Preprocessed features from preprocessing step"}
   - {name: model_name, type: String, description: "Model type: 'isolationforest' or 'rcf'", optional: true, default: "isolationforest"}
@@ -35,7 +35,8 @@ implementation:
       - -c
       - |
         PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location \
-          'rrcf'
+          'rrcf>=0.4.4' \
+          'scipy>=1.11.0'
         exec "$0" "$@"
       - python3
       - -u
