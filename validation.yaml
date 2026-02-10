@@ -1,4 +1,4 @@
-name: Anomaly Detection Validation v1.5
+name: Anomaly Detection Validation v1.6
 inputs:
   - {name: trained_model, type: Model, description: "Trained model (Isolation Forest or RCF)"}
   - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
@@ -31,12 +31,11 @@ implementation:
         
         warnings.filterwarnings('ignore')
         
-        def ensure_output_directory(filepath):
-            dirpath = os.path.dirname(filepath)
-            if dirpath and dirpath != '.':
-                os.makedirs(dirpath, exist_ok=True)
-                print(f"[DEBUG] Ensured directory exists: {dirpath}")
-            return dirpath if dirpath else '.'
+        def ensure_dir_for(p):
+            d = os.path.dirname(p)
+            if d and not os.path.exists(d):
+                os.makedirs(d, exist_ok=True)
+                print(f"[DEBUG] Created directory: {d}")
         
         def load_model(model_path):
             try:
@@ -111,7 +110,7 @@ implementation:
         def calculate_validation_stats(scores, predictions):
             stats = {}
             
-            stats['total_samples'] = len(predictions)
+            stats['total_samples'] = int(len(predictions))
             stats['normal_count'] = int((predictions == 1).sum())
             stats['anomaly_count'] = int((predictions == -1).sum())
             stats['anomaly_percentage'] = float(stats['anomaly_count'] / stats['total_samples'] * 100)
@@ -157,20 +156,13 @@ implementation:
 
         try:
             print("="*80)
-            print("ANOMALY DETECTION VALIDATION v1.5")
+            print("ANOMALY DETECTION VALIDATION v1.6")
             print("="*80)
             
             # Debug output paths
             print(f"[DEBUG] predictions path: {args.predictions}")
             print(f"[DEBUG] validation_metadata path: {args.validation_metadata}")
             print(f"[DEBUG] Current directory: {os.getcwd()}")
-            
-            # CRITICAL: Ensure output directories exist FIRST
-            print("[INIT] Creating output directories...")
-            predictions_dir = ensure_output_directory(args.predictions)
-            metadata_dir = ensure_output_directory(args.validation_metadata)
-            print(f"[INFO] Predictions directory: {predictions_dir}")
-            print(f"[INFO] Metadata directory: {metadata_dir}")
             
             include_scores = str(args.include_scores).lower() in ("1", "true", "t", "yes", "y")
             output_format = args.output_format.lower()
@@ -275,28 +267,30 @@ implementation:
                 'training_metadata': training_meta if training_meta else None
             }
             
-            # CRITICAL: Write outputs with verification
-            print("[OUTPUT] Writing prediction file...")
+            # Save outputs using ensure_dir_for pattern (from inference model)
+            print("[OUTPUT] Saving predictions...")
+            ensure_dir_for(args.predictions)
             output_df.to_parquet(args.predictions, index=False)
             
-            # Verify predictions file
-            if not os.path.exists(args.predictions):
+            if os.path.exists(args.predictions):
+                file_size = os.path.getsize(args.predictions)
+                print(f"[SUCCESS] Predictions saved: {args.predictions} ({file_size} bytes)")
+            else:
                 raise FileNotFoundError(f"CRITICAL: Failed to create predictions file at {args.predictions}")
             
-            file_size = os.path.getsize(args.predictions)
-            print(f"[SUCCESS] Predictions saved: {args.predictions} ({file_size} bytes)")
-            
-            # Write metadata
-            print("[OUTPUT] Writing metadata file...")
+            # Save metadata
+            print("[OUTPUT] Saving validation metadata...")
+            ensure_dir_for(args.validation_metadata)
             with open(args.validation_metadata, 'w') as f:
                 json.dump(validation_meta, f, indent=2)
             
-            # Verify metadata file
-            if not os.path.exists(args.validation_metadata):
+            if os.path.exists(args.validation_metadata):
+                file_size = os.path.getsize(args.validation_metadata)
+                print(f"[SUCCESS] Metadata saved: {args.validation_metadata} ({file_size} bytes)")
+            else:
                 raise FileNotFoundError(f"CRITICAL: Failed to create metadata file at {args.validation_metadata}")
             
-            file_size = os.path.getsize(args.validation_metadata)
-            print(f"[SUCCESS] Metadata saved: {args.validation_metadata} ({file_size} bytes)")
+            print(f"[INFO] Output columns: {list(output_df.columns)}")
             
             # Summary
             print(f"{'='*80}")
@@ -320,7 +314,10 @@ implementation:
             print(f"{'='*80}")
             
         except Exception as exc:
-            print("ERROR during validation: " + str(exc), file=sys.stderr)
+            print("="*80, file=sys.stderr)
+            print("ERROR DURING VALIDATION", file=sys.stderr)
+            print("="*80, file=sys.stderr)
+            print(f"Error: {exc}", file=sys.stderr)
             traceback.print_exc()
             sys.exit(1)
     args:
