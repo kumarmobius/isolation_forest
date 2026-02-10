@@ -1,0 +1,311 @@
+name: Anomaly Detection Validation v1.0
+inputs:
+  - {name: trained_model, type: Model, description: "Trained model (Isolation Forest or RCF)"}
+  - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
+  - {name: validation_data, type: Dataset, description: "Dataset to validate/predict on"}
+  - {name: include_scores, type: String, description: "true/false - Include anomaly scores in output", optional: true, default: "true"}
+  - {name: output_format, type: String, description: "Format: 'simple' (index, label) or 'detailed' (index, label, score, features)", optional: true, default: "simple"}
+
+outputs:
+  - {name: predictions, type: Dataset, description: "Predictions with index and anomaly classification"}
+  - {name: validation_metadata, type: Data, description: "Validation statistics and metrics"}
+
+implementation:
+  container:
+    image: gurpreetgandhi/nesy-factory:vtest4
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse, os, sys, json, traceback, gzip, warnings
+        from datetime import datetime
+        import pandas as pd, numpy as np
+        import cloudpickle
+        
+        warnings.filterwarnings('ignore')
+        
+        def ensure_dir_for(p):
+            d=os.path.dirname(p)
+            if d and not os.path.exists(d):
+                os.makedirs(d, exist_ok=True)
+        
+        def load_model(model_path):
+            try:
+                with gzip.open(model_path, 'rb') as f:
+                    model_artifact = cloudpickle.load(f)
+                
+                # Detect model type
+                if isinstance(model_artifact, dict) and 'forest' in model_artifact:
+                    # RCF model
+                    return model_artifact, 'rcf'
+                else:
+                    # Isolation Forest
+                    return model_artifact, 'isolationforest'
+            except Exception as e:
+                print(f"[ERROR] Failed to load model: {e}", file=sys.stderr)
+                raise
+        
+        def predict_rcf(rcf_artifact, X, verbose=False):
+            try:
+                import rrcf
+            except ImportError:
+                print("[INFO] Installing rrcf library...")
+                import subprocess
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "rrcf", "--break-system-packages"])
+                import rrcf
+            
+            forest = rcf_artifact['forest']
+            threshold = rcf_artifact['threshold']
+            num_trees = rcf_artifact['num_trees']
+            
+            print(f"[INFO] RCF forest loaded: {num_trees} trees, threshold={threshold:.6f}")
+            
+            n_samples = X.shape[0]
+            avg_codisp = np.zeros(n_samples)
+            
+            print(f"[INFO] Calculating CoDisp scores for {n_samples} samples...")
+            
+            # Calculate average CoDisp across all trees
+            for tree_idx, tree in enumerate(forest):
+                # For each point, check if it exists in tree and calculate codisp
+                for point_idx in range(n_samples):
+                    # Insert point temporarily to get codisp
+                    try:
+                        tree.insert_point(X[point_idx], index=point_idx)
+                        codisp = tree.codisp(point_idx)
+                        avg_codisp[point_idx] += codisp
+                        tree.forget_point(point_idx)
+                    except:
+                        # If point already exists or error, skip
+                        pass
+                
+                if verbose and (tree_idx + 1) % 10 == 0:
+                    print(f"[INFO] Scored with {tree_idx + 1}/{num_trees} trees")
+            
+            avg_codisp /= num_trees
+            
+            # Predict based on threshold
+            predictions = np.where(avg_codisp > threshold, -1, 1)
+            
+            return avg_codisp, predictions
+        
+        def predict_isolation_forest(model, X, verbose=False):
+            """Perform prediction using Isolation Forest"""
+            print(f"[INFO] Running Isolation Forest prediction on {X.shape[0]} samples...")
+            
+            scores = model.decision_function(X)
+            predictions = model.predict(X)
+            
+            print(f"[INFO] Prediction complete")
+            
+            return scores, predictions
+        
+        def calculate_validation_stats(scores, predictions):
+            """Calculate validation statistics"""
+            stats = {}
+            
+            stats['total_samples'] = len(predictions)
+            stats['normal_count'] = int((predictions == 1).sum())
+            stats['anomaly_count'] = int((predictions == -1).sum())
+            stats['anomaly_percentage'] = float(stats['anomaly_count'] / stats['total_samples'] * 100)
+            
+            stats['score_mean'] = float(np.mean(scores))
+            stats['score_std'] = float(np.std(scores))
+            stats['score_min'] = float(np.min(scores))
+            stats['score_max'] = float(np.max(scores))
+            stats['score_median'] = float(np.median(scores))
+            
+            anomaly_scores = scores[predictions == -1]
+            if len(anomaly_scores) > 0:
+                stats['anomaly_score_mean'] = float(np.mean(anomaly_scores))
+                stats['anomaly_score_min'] = float(np.min(anomaly_scores))
+                stats['anomaly_score_max'] = float(np.max(anomaly_scores))
+            else:
+                stats['anomaly_score_mean'] = None
+                stats['anomaly_score_min'] = None
+                stats['anomaly_score_max'] = None
+            
+            normal_scores = scores[predictions == 1]
+            if len(normal_scores) > 0:
+                stats['normal_score_mean'] = float(np.mean(normal_scores))
+                stats['normal_score_min'] = float(np.min(normal_scores))
+                stats['normal_score_max'] = float(np.max(normal_scores))
+            else:
+                stats['normal_score_mean'] = None
+                stats['normal_score_min'] = None
+                stats['normal_score_max'] = None
+            
+            return stats
+        
+        # Main execution
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--trained_model', type=str, required=True)
+        parser.add_argument('--training_metadata', type=str, default='')
+        parser.add_argument('--validation_data', type=str, required=True)
+        parser.add_argument('--include_scores', type=str, default='true')
+        parser.add_argument('--output_format', type=str, default='simple')
+        parser.add_argument('--predictions', type=str, required=True)
+        parser.add_argument('--validation_metadata', type=str, required=True)
+        args = parser.parse_args()
+
+        try:
+            print("="*80)
+            print("ANOMALY DETECTION VALIDATION v1.0")
+            print("="*80)
+            
+            include_scores = str(args.include_scores).lower() in ("1", "true", "t", "yes", "y")
+            output_format = args.output_format.lower()
+            
+            # Load training metadata (optional)
+            training_meta = {}
+            if args.training_metadata and os.path.exists(args.training_metadata):
+                print("[STEP 1/6] Loading training metadata...")
+                with open(args.training_metadata, 'r') as f:
+                    training_meta = json.load(f)
+                print(f"[INFO] Model type from metadata: {training_meta.get('model_type', 'unknown')}")
+            else:
+                print("[STEP 1/6] No training metadata provided, will auto-detect model type")
+            
+            # Load model
+            print("[STEP 2/6] Loading trained model...")
+            model_artifact, model_type = load_model(args.trained_model)
+            print(f"[INFO] Model type detected: {model_type.upper()}")
+            
+            # Load validation data
+            print("[STEP 3/6] Loading validation data...")
+            data = pd.read_parquet(args.validation_data)
+            print(f"[INFO] Validation data shape: {data.shape}")
+            print(f"[INFO] Features: {data.shape[1]}")
+            print(f"[INFO] Samples: {data.shape[0]}")
+            
+            # Validate data
+            if data.shape[0] == 0:
+                print("[ERROR] Empty dataset", file=sys.stderr)
+                sys.exit(1)
+            
+            # Handle NaN and Inf
+            nan_count = data.isna().sum().sum()
+            inf_count = np.isinf(data.select_dtypes(include=[np.number]).values).sum()
+            
+            if nan_count > 0:
+                print(f"[WARNING] Found {nan_count} NaN values - filling with 0")
+                data = data.fillna(0)
+            
+            if inf_count > 0:
+                print(f"[WARNING] Found {inf_count} Inf values - replacing with 0")
+                data = data.replace([np.inf, -np.inf], 0)
+            
+            X = data.values
+            
+            # Perform prediction
+            print("[STEP 4/6] Running anomaly detection...")
+            import time
+            start_time = time.time()
+            
+            if model_type == 'rcf':
+                scores, predictions = predict_rcf(model_artifact, X, verbose=True)
+            else:
+                scores, predictions = predict_isolation_forest(model_artifact, X, verbose=True)
+            
+            prediction_time = time.time() - start_time
+            print(f"[INFO] Prediction completed in {prediction_time:.2f} seconds")
+            
+            # Calculate statistics
+            print("[STEP 5/6] Calculating validation statistics...")
+            stats = calculate_validation_stats(scores, predictions)
+            
+            print(f"[INFO] Validation Results:")
+            print(f"  - Total samples: {stats['total_samples']}")
+            print(f"  - Normal samples: {stats['normal_count']} ({100 - stats['anomaly_percentage']:.2f}%)")
+            print(f"  - Anomalies detected: {stats['anomaly_count']} ({stats['anomaly_percentage']:.2f}%)")
+            print(f"  - Score range: [{stats['score_min']:.4f}, {stats['score_max']:.4f}]")
+            
+            # Create output dataframe
+            print("[STEP 6/6] Creating output dataset...")
+            
+            if output_format == 'simple':
+                # Simple format: index_no, classification
+                output_df = pd.DataFrame({
+                    'index_no': range(len(predictions)),
+                    'classification': ['anomaly' if p == -1 else 'not_anomaly' for p in predictions]
+                })
+                
+                if include_scores:
+                    output_df['anomaly_score'] = scores
+                
+            else:  # detailed format
+                # Detailed format: index, classification, score, all features
+                output_df = data.copy()
+                output_df.insert(0, 'index_no', range(len(predictions)))
+                output_df.insert(1, 'classification', ['anomaly' if p == -1 else 'not_anomaly' for p in predictions])
+                output_df.insert(2, 'anomaly_score', scores)
+                output_df.insert(3, 'prediction', predictions)
+            
+            # Save outputs
+            ensure_dir_for(args.predictions)
+            ensure_dir_for(args.validation_metadata)
+            
+            output_df.to_parquet(args.predictions, index=False)
+            print(f"[INFO] Saved predictions to: {args.predictions}")
+            
+            # Create validation metadata
+            validation_meta = {
+                'timestamp': datetime.utcnow().isoformat() + 'Z',
+                'model_type': model_type,
+                'prediction_time_seconds': float(prediction_time),
+                'validation_data_info': {
+                    'n_samples': int(data.shape[0]),
+                    'n_features': int(data.shape[1])
+                },
+                'validation_statistics': stats,
+                'output_format': output_format,
+                'include_scores': include_scores,
+                'training_metadata': training_meta if training_meta else None
+            }
+            
+            with open(args.validation_metadata, 'w') as f:
+                json.dump(validation_meta, f, indent=2)
+            
+            print(f"[INFO] Saved validation metadata to: {args.validation_metadata}")
+            
+            # Summary
+            print(f"{'='*80}")
+            print("VALIDATION COMPLETE - SUMMARY")
+            print(f"{'='*80}")
+            print(f"Model type:             {model_type.upper()}")
+            print(f"Validation samples:     {data.shape[0]:,}")
+            print(f"Prediction time:        {prediction_time:.2f}s")
+            print(f"Output format:          {output_format}")
+            print(f"")
+            print(f"DETECTION RESULTS:")
+            print(f"  Normal samples:       {stats['normal_count']:,} ({100 - stats['anomaly_percentage']:.2f}%)")
+            print(f"  Anomalies:            {stats['anomaly_count']:,} ({stats['anomaly_percentage']:.2f}%)")
+            print(f"  Score range:          [{stats['score_min']:.4f}, {stats['score_max']:.4f}]")
+            if stats['anomaly_score_mean']:
+                print(f"  Anomaly score avg:    {stats['anomaly_score_mean']:.4f}")
+            if stats['normal_score_mean']:
+                print(f"  Normal score avg:     {stats['normal_score_mean']:.4f}")
+            print(f"{'='*80}")
+            print("SUCCESS: Validation complete!")
+            print(f"{'='*80}")
+            
+        except Exception as exc:
+            print("ERROR during validation: " + str(exc), file=sys.stderr)
+            traceback.print_exc()
+            sys.exit(1)
+    args:
+      - --trained_model
+      - {inputPath: trained_model}
+      - --training_metadata
+      - {inputPath: training_metadata}
+      - --validation_data
+      - {inputPath: validation_data}
+      - --include_scores
+      - {inputValue: include_scores}
+      - --output_format
+      - {inputValue: output_format}
+      - --predictions
+      - {outputPath: predictions}
+      - --validation_metadata
+      - {outputPath: validation_metadata}
