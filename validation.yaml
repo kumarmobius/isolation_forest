@@ -91,7 +91,6 @@ implementation:
             return avg_codisp, predictions
         
         def predict_isolation_forest(model, X, verbose=False):
-            """Perform prediction using Isolation Forest"""
             print(f"[INFO] Running Isolation Forest prediction on {X.shape[0]} samples...")
             
             scores = model.decision_function(X)
@@ -102,7 +101,6 @@ implementation:
             return scores, predictions
         
         def calculate_validation_stats(scores, predictions):
-            """Calculate validation statistics"""
             stats = {}
             
             stats['total_samples'] = len(predictions)
