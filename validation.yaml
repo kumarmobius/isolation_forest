@@ -1,4 +1,4 @@
-name: Anomaly Detection Validation v1.8
+name: Anomaly Detection Validation v1.9
 inputs:
   - {name: trained_model, type: Model, description: "Trained model (Isolation Forest or RCF)"}
   - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
@@ -20,6 +20,7 @@ implementation:
         PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location \
           'rrcf>=0.4.4' \
           'scipy>=1.11.0'
+        exec "$0" "$@"
       - python3
       - -u
       - -c
@@ -35,7 +36,6 @@ implementation:
             d = os.path.dirname(p)
             if d and not os.path.exists(d):
                 os.makedirs(d, exist_ok=True)
-                print(f"[DEBUG] Created directory: {d}")
         
         def load_model(model_path):
             try:
@@ -131,7 +131,7 @@ implementation:
                 stats['anomaly_score_min'] = None
                 stats['anomaly_score_max'] = None
             
-            normal_scores = scores[predictions == 1]
+            normal_scores = scores[predictions == 1)
             if len(normal_scores) > 0:
                 stats['normal_score_mean'] = float(np.mean(normal_scores))
                 stats['normal_score_min'] = float(np.min(normal_scores))
@@ -156,13 +156,8 @@ implementation:
 
         try:
             print("="*80)
-            print("ANOMALY DETECTION VALIDATION v1.6")
+            print("ANOMALY DETECTION VALIDATION v1.8")
             print("="*80)
-            
-            # Debug output paths
-            print(f"[DEBUG] predictions path: {args.predictions}")
-            print(f"[DEBUG] validation_metadata path: {args.validation_metadata}")
-            print(f"[DEBUG] Current directory: {os.getcwd()}")
             
             include_scores = str(args.include_scores).lower() in ("1", "true", "t", "yes", "y")
             output_format = args.output_format.lower()
@@ -267,55 +262,45 @@ implementation:
                 'training_metadata': training_meta if training_meta else None
             }
             
-            # Save outputs - ensure we write to the directory, not create it as a file
+            # CRITICAL FIX: Save outputs directly to the specified paths
             print("[OUTPUT] Saving predictions...")
-            print(f"[DEBUG] Full predictions path: {args.predictions}")
+            print(f"[INFO] Saving predictions to: {args.predictions}")
             
             # Ensure parent directory exists
             ensure_dir_for(args.predictions)
             
-            # If predictions path is a directory, write to data file inside it
-            if os.path.isdir(args.predictions):
-                predictions_file = os.path.join(args.predictions, "data")
-            else:
-                predictions_file = args.predictions
+            # Save predictions directly to the output path
+            output_df.to_parquet(args.predictions, index=False)
             
-            output_df.to_parquet(predictions_file, index=False)
-            
-            if os.path.exists(predictions_file):
-                file_size = os.path.getsize(predictions_file)
-                print(f"[SUCCESS] Predictions saved: {predictions_file} ({file_size} bytes)")
+            if os.path.exists(args.predictions):
+                file_size = os.path.getsize(args.predictions)
+                print(f"[SUCCESS] Predictions saved: {args.predictions} ({file_size} bytes)")
             else:
-                raise FileNotFoundError(f"CRITICAL: Failed to create predictions file at {predictions_file}")
+                raise FileNotFoundError(f"Failed to save predictions to {args.predictions}")
             
             # Save metadata
             print("[OUTPUT] Saving validation metadata...")
-            print(f"[DEBUG] Full metadata path: {args.validation_metadata}")
+            print(f"[INFO] Saving metadata to: {args.validation_metadata}")
             
             # Ensure parent directory exists
             ensure_dir_for(args.validation_metadata)
             
-            # If metadata path is a directory, write to data file inside it
-            if os.path.isdir(args.validation_metadata):
-                metadata_file = os.path.join(args.validation_metadata, "data")
-            else:
-                metadata_file = args.validation_metadata
-            
-            with open(metadata_file, 'w') as f:
+            # Save metadata directly to the output path
+            with open(args.validation_metadata, 'w') as f:
                 json.dump(validation_meta, f, indent=2)
             
-            if os.path.exists(metadata_file):
-                file_size = os.path.getsize(metadata_file)
-                print(f"[SUCCESS] Metadata saved: {metadata_file} ({file_size} bytes)")
+            if os.path.exists(args.validation_metadata):
+                file_size = os.path.getsize(args.validation_metadata)
+                print(f"[SUCCESS] Metadata saved: {args.validation_metadata} ({file_size} bytes)")
             else:
-                raise FileNotFoundError(f"CRITICAL: Failed to create metadata file at {metadata_file}")
+                raise FileNotFoundError(f"Failed to save metadata to {args.validation_metadata}")
             
             print(f"[INFO] Output columns: {list(output_df.columns)}")
             
             # Summary
-            print(f"{'='*80}")
+            print("="*80)
             print("VALIDATION COMPLETE - SUMMARY")
-            print(f"{'='*80}")
+            print("="*80)
             print(f"Model type:             {model_type.upper()}")
             print(f"Validation samples:     {data.shape[0]:,}")
             print(f"Prediction time:        {prediction_time:.2f}s")
@@ -329,9 +314,9 @@ implementation:
                 print(f"  Anomaly score avg:    {stats['anomaly_score_mean']:.4f}")
             if stats['normal_score_mean']:
                 print(f"  Normal score avg:     {stats['normal_score_mean']:.4f}")
-            print(f"{'='*80}")
+            print("="*80)
             print("SUCCESS: Validation complete!")
-            print(f"{'='*80}")
+            print("="*80)
             
         except Exception as exc:
             print("="*80, file=sys.stderr)
