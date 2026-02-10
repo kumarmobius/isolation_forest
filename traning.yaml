@@ -1,4 +1,4 @@
-name: Anomaly Detection Training v2.3
+name: Anomaly Detection Training v2.4
 inputs:
   - {name: preprocessed_data, type: Dataset, description: "Preprocessed features from preprocessing step"}
   - {name: model_name, type: String, description: "Model type: 'isolationforest' or 'rcf'", optional: true, default: "isolationforest"}
@@ -430,7 +430,7 @@ implementation:
             # Save model
             with gzip.open(args.trained_model, 'wb') as f:
                 cloudpickle.dump(model_artifact, f)
-            print(f"[INFO] Saved {model_name.upper()} model to: {args.trained_model}")}")
+            print(f"[INFO] Saved {model_name.upper()} model to: {args.trained_model}")
             
             # Save anomaly scores
             results_df.to_parquet(args.anomaly_scores, index=False)
