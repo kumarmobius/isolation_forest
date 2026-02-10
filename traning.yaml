@@ -1,4 +1,4 @@
-name: Anomaly Detection Training v2.4
+name: Anomaly Detection Training v2.5
 inputs:
   - {name: preprocessed_data, type: Dataset, description: "Preprocessed features from preprocessing step"}
   - {name: model_name, type: String, description: "Model type: 'isolationforest' or 'rcf'", optional: true, default: "isolationforest"}
@@ -44,6 +44,7 @@ implementation:
       - |
         import argparse, os, sys, json, traceback, gzip, pickle, warnings
         from datetime import datetime
+        import cloudpickle
         import pandas as pd, numpy as np
         from sklearn.ensemble import IsolationForest
         
