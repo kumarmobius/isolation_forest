@@ -1,4 +1,4 @@
-name: Anomaly Detection Validation v1.4
+name: Anomaly Detection Validation v1.5
 inputs:
   - {name: trained_model, type: Model, description: "Trained model (Isolation Forest or RCF)"}
   - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
@@ -30,6 +30,13 @@ implementation:
         import cloudpickle
         
         warnings.filterwarnings('ignore')
+        
+        def ensure_output_directory(filepath):
+            dirpath = os.path.dirname(filepath)
+            if dirpath and dirpath != '.':
+                os.makedirs(dirpath, exist_ok=True)
+                print(f"[DEBUG] Ensured directory exists: {dirpath}")
+            return dirpath if dirpath else '.'
         
         def load_model(model_path):
             try:
@@ -150,13 +157,20 @@ implementation:
 
         try:
             print("="*80)
-            print("ANOMALY DETECTION VALIDATION v1.4")
+            print("ANOMALY DETECTION VALIDATION v1.5")
             print("="*80)
             
             # Debug output paths
             print(f"[DEBUG] predictions path: {args.predictions}")
             print(f"[DEBUG] validation_metadata path: {args.validation_metadata}")
             print(f"[DEBUG] Current directory: {os.getcwd()}")
+            
+            # CRITICAL: Ensure output directories exist FIRST
+            print("[INIT] Creating output directories...")
+            predictions_dir = ensure_output_directory(args.predictions)
+            metadata_dir = ensure_output_directory(args.validation_metadata)
+            print(f"[INFO] Predictions directory: {predictions_dir}")
+            print(f"[INFO] Metadata directory: {metadata_dir}")
             
             include_scores = str(args.include_scores).lower() in ("1", "true", "t", "yes", "y")
             output_format = args.output_format.lower()
@@ -261,41 +275,28 @@ implementation:
                 'training_metadata': training_meta if training_meta else None
             }
             
-            # Save outputs - ensure parent directories exist
-            predictions_dir = os.path.dirname(args.predictions)
-            metadata_dir = os.path.dirname(args.validation_metadata)
-            
-            if predictions_dir:
-                os.makedirs(predictions_dir, exist_ok=True)
-                print(f"[DEBUG] Created directory: {predictions_dir}")
-            
-            if metadata_dir:
-                os.makedirs(metadata_dir, exist_ok=True)
-                print(f"[DEBUG] Created directory: {metadata_dir}")
-            
-            # Write prediction output
+            # CRITICAL: Write outputs with verification
+            print("[OUTPUT] Writing prediction file...")
             output_df.to_parquet(args.predictions, index=False)
-            print(f"[INFO] Saved predictions to: {args.predictions}")
             
-            # Verify predictions file exists
-            if os.path.exists(args.predictions):
-                file_size = os.path.getsize(args.predictions)
-                print(f"[DEBUG] Predictions file created successfully ({file_size} bytes)")
-            else:
-                raise FileNotFoundError(f"Failed to create predictions file at {args.predictions}")
+            # Verify predictions file
+            if not os.path.exists(args.predictions):
+                raise FileNotFoundError(f"CRITICAL: Failed to create predictions file at {args.predictions}")
             
-            # Write metadata output
+            file_size = os.path.getsize(args.predictions)
+            print(f"[SUCCESS] Predictions saved: {args.predictions} ({file_size} bytes)")
+            
+            # Write metadata
+            print("[OUTPUT] Writing metadata file...")
             with open(args.validation_metadata, 'w') as f:
                 json.dump(validation_meta, f, indent=2)
             
-            print(f"[INFO] Saved validation metadata to: {args.validation_metadata}")
+            # Verify metadata file
+            if not os.path.exists(args.validation_metadata):
+                raise FileNotFoundError(f"CRITICAL: Failed to create metadata file at {args.validation_metadata}")
             
-            # Verify metadata file exists
-            if os.path.exists(args.validation_metadata):
-                file_size = os.path.getsize(args.validation_metadata)
-                print(f"[DEBUG] Metadata file created successfully ({file_size} bytes)")
-            else:
-                raise FileNotFoundError(f"Failed to create metadata file at {args.validation_metadata}")
+            file_size = os.path.getsize(args.validation_metadata)
+            print(f"[SUCCESS] Metadata saved: {args.validation_metadata} ({file_size} bytes)")
             
             # Summary
             print(f"{'='*80}")
