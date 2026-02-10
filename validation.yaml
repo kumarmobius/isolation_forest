@@ -1,4 +1,4 @@
-name: Anomaly Detection Validation v1.6
+name: Anomaly Detection Validation v1.7
 inputs:
   - {name: trained_model, type: Model, description: "Trained model (Isolation Forest or RCF)"}
   - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
@@ -32,6 +32,7 @@ implementation:
         warnings.filterwarnings('ignore')
         
         def ensure_dir_for(p):
+            """Ensure parent directory exists for given path."""
             d = os.path.dirname(p)
             if d and not os.path.exists(d):
                 os.makedirs(d, exist_ok=True)
@@ -267,28 +268,48 @@ implementation:
                 'training_metadata': training_meta if training_meta else None
             }
             
-            # Save outputs using ensure_dir_for pattern (from inference model)
+            # Save outputs - ensure we write to the directory, not create it as a file
             print("[OUTPUT] Saving predictions...")
-            ensure_dir_for(args.predictions)
-            output_df.to_parquet(args.predictions, index=False)
+            print(f"[DEBUG] Full predictions path: {args.predictions}")
             
-            if os.path.exists(args.predictions):
-                file_size = os.path.getsize(args.predictions)
-                print(f"[SUCCESS] Predictions saved: {args.predictions} ({file_size} bytes)")
+            # Ensure parent directory exists
+            ensure_dir_for(args.predictions)
+            
+            # If predictions path is a directory, write to data file inside it
+            if os.path.isdir(args.predictions):
+                predictions_file = os.path.join(args.predictions, "data")
             else:
-                raise FileNotFoundError(f"CRITICAL: Failed to create predictions file at {args.predictions}")
+                predictions_file = args.predictions
+            
+            output_df.to_parquet(predictions_file, index=False)
+            
+            if os.path.exists(predictions_file):
+                file_size = os.path.getsize(predictions_file)
+                print(f"[SUCCESS] Predictions saved: {predictions_file} ({file_size} bytes)")
+            else:
+                raise FileNotFoundError(f"CRITICAL: Failed to create predictions file at {predictions_file}")
             
             # Save metadata
             print("[OUTPUT] Saving validation metadata...")
+            print(f"[DEBUG] Full metadata path: {args.validation_metadata}")
+            
+            # Ensure parent directory exists
             ensure_dir_for(args.validation_metadata)
-            with open(args.validation_metadata, 'w') as f:
+            
+            # If metadata path is a directory, write to data file inside it
+            if os.path.isdir(args.validation_metadata):
+                metadata_file = os.path.join(args.validation_metadata, "data")
+            else:
+                metadata_file = args.validation_metadata
+            
+            with open(metadata_file, 'w') as f:
                 json.dump(validation_meta, f, indent=2)
             
-            if os.path.exists(args.validation_metadata):
-                file_size = os.path.getsize(args.validation_metadata)
-                print(f"[SUCCESS] Metadata saved: {args.validation_metadata} ({file_size} bytes)")
+            if os.path.exists(metadata_file):
+                file_size = os.path.getsize(metadata_file)
+                print(f"[SUCCESS] Metadata saved: {metadata_file} ({file_size} bytes)")
             else:
-                raise FileNotFoundError(f"CRITICAL: Failed to create metadata file at {args.validation_metadata}")
+                raise FileNotFoundError(f"CRITICAL: Failed to create metadata file at {metadata_file}")
             
             print(f"[INFO] Output columns: {list(output_df.columns)}")
             
