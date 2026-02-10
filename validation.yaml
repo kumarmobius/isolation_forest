@@ -1,4 +1,4 @@
-name: Anomaly Detection Validation v1.9
+name: Anomaly Detection Validation v2.1
 inputs:
   - {name: trained_model, type: Model, description: "Trained model (Isolation Forest or RCF)"}
   - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
@@ -131,7 +131,7 @@ implementation:
                 stats['anomaly_score_min'] = None
                 stats['anomaly_score_max'] = None
             
-            normal_scores = scores[predictions == 1)
+            normal_scores = scores[predictions == 1]
             if len(normal_scores) > 0:
                 stats['normal_score_mean'] = float(np.mean(normal_scores))
                 stats['normal_score_min'] = float(np.min(normal_scores))
