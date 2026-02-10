@@ -1,4 +1,4 @@
-name: Anomaly Detection Validation v1.3
+name: Anomaly Detection Validation v1.4
 inputs:
   - {name: trained_model, type: Model, description: "Trained model (Isolation Forest or RCF)"}
   - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
@@ -30,11 +30,6 @@ implementation:
         import cloudpickle
         
         warnings.filterwarnings('ignore')
-        
-        def ensure_dir_for(p):
-            d=os.path.dirname(p)
-            if d and not os.path.exists(d):
-                os.makedirs(d, exist_ok=True)
         
         def load_model(model_path):
             try:
@@ -155,8 +150,13 @@ implementation:
 
         try:
             print("="*80)
-            print("ANOMALY DETECTION VALIDATION v1.0")
+            print("ANOMALY DETECTION VALIDATION v1.4")
             print("="*80)
+            
+            # Debug output paths
+            print(f"[DEBUG] predictions path: {args.predictions}")
+            print(f"[DEBUG] validation_metadata path: {args.validation_metadata}")
+            print(f"[DEBUG] Current directory: {os.getcwd()}")
             
             include_scores = str(args.include_scores).lower() in ("1", "true", "t", "yes", "y")
             output_format = args.output_format.lower()
@@ -246,13 +246,6 @@ implementation:
                 output_df.insert(2, 'anomaly_score', scores)
                 output_df.insert(3, 'prediction', predictions)
             
-            # Save outputs
-            os.makedirs(os.path.dirname(args.predictions) or '.', exist_ok=True)
-            os.makedirs(os.path.dirname(args.validation_metadata) or '.', exist_ok=True)
-   
-            output_df.to_parquet(args.predictions, index=False)
-            print(f"[INFO] Saved predictions to: {args.predictions}")
-            
             # Create validation metadata
             validation_meta = {
                 'timestamp': datetime.utcnow().isoformat() + 'Z',
@@ -268,10 +261,41 @@ implementation:
                 'training_metadata': training_meta if training_meta else None
             }
             
+            # Save outputs - ensure parent directories exist
+            predictions_dir = os.path.dirname(args.predictions)
+            metadata_dir = os.path.dirname(args.validation_metadata)
+            
+            if predictions_dir:
+                os.makedirs(predictions_dir, exist_ok=True)
+                print(f"[DEBUG] Created directory: {predictions_dir}")
+            
+            if metadata_dir:
+                os.makedirs(metadata_dir, exist_ok=True)
+                print(f"[DEBUG] Created directory: {metadata_dir}")
+            
+            # Write prediction output
+            output_df.to_parquet(args.predictions, index=False)
+            print(f"[INFO] Saved predictions to: {args.predictions}")
+            
+            # Verify predictions file exists
+            if os.path.exists(args.predictions):
+                file_size = os.path.getsize(args.predictions)
+                print(f"[DEBUG] Predictions file created successfully ({file_size} bytes)")
+            else:
+                raise FileNotFoundError(f"Failed to create predictions file at {args.predictions}")
+            
+            # Write metadata output
             with open(args.validation_metadata, 'w') as f:
                 json.dump(validation_meta, f, indent=2)
             
             print(f"[INFO] Saved validation metadata to: {args.validation_metadata}")
+            
+            # Verify metadata file exists
+            if os.path.exists(args.validation_metadata):
+                file_size = os.path.getsize(args.validation_metadata)
+                print(f"[DEBUG] Metadata file created successfully ({file_size} bytes)")
+            else:
+                raise FileNotFoundError(f"Failed to create metadata file at {args.validation_metadata}")
             
             # Summary
             print(f"{'='*80}")
