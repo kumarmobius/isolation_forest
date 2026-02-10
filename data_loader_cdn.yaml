@@ -1,0 +1,164 @@
+name: CDN Dataset Loader
+
+inputs:
+  - {name: cdn_url, type: String, description: 'CDN URL to download dataset file (CSV, JSON, or Parquet)'}
+  - {name: use_column, type: String, optional: true, description: 'Comma-separated columns to keep'}
+  - {name: drop_columns, type: String, optional: true, description: 'Comma-separated columns to drop'}
+
+outputs:
+  - {name: dataset, type: Dataset}
+
+implementation:
+  container:
+    image: gurpreetgandhi/nesy-factory:vtest4
+    command:
+      - python3
+      - -u
+      - -c
+      - |
+        import argparse
+        import os
+        import sys
+        import tempfile
+        import logging
+        import json
+        import pandas as pd
+        import requests
+        from requests.adapters import HTTPAdapter
+        try:
+            from urllib3.util import Retry
+        except Exception:
+            from urllib3 import Retry
+
+        # ---------- CLI ----------
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--cdn_url', required=True)
+        parser.add_argument('--use_column', default=None)
+        parser.add_argument('--drop_columns', default=None)
+        parser.add_argument('--dataset', required=True)
+        args = parser.parse_args()
+
+        # ---------- Logging ----------
+        logging.basicConfig(
+            stream=sys.stdout,
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(message)s"
+        )
+        logger = logging.getLogger("cdn_loader")
+
+        # ---------- HTTP session ----------
+        session = requests.Session()
+        retry = Retry(
+            total=5,
+            backoff_factor=1,
+            status_forcelist=[500,502,503,504],
+            allowed_methods=frozenset(["GET","POST","HEAD"])
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        # ---------- Download ----------
+        logger.info("Downloading dataset from CDN: %s", args.cdn_url)
+        resp = session.get(args.cdn_url, timeout=30)
+        resp.raise_for_status()
+
+        fd, tmp_path = tempfile.mkstemp(suffix=".download")
+        os.close(fd)
+        with open(tmp_path, "wb") as f:
+            f.write(resp.content)
+
+        # ---------- Format detection ----------
+        lower = args.cdn_url.lower()
+        if lower.endswith(".parquet"):
+            fmt = "parquet"
+        elif lower.endswith(".csv"):
+            fmt = "csv"
+        elif lower.endswith(".json"):
+            fmt = "json"
+        else:
+            ctype = resp.headers.get("Content-Type","").lower()
+            if "parquet" in ctype:
+                fmt = "parquet"
+            elif "csv" in ctype or "text" in ctype:
+                fmt = "csv"
+            elif "json" in ctype:
+                fmt = "json"
+            else:
+                fmt = None
+
+        # ---------- Load ----------
+        try:
+            if fmt == "parquet":
+                df = pd.read_parquet(tmp_path)
+            elif fmt == "csv":
+                df = pd.read_csv(tmp_path)
+            elif fmt == "json":
+                with open(tmp_path) as f:
+                    raw = json.load(f)
+                for key in ("data","items","results","records"):
+                    if isinstance(raw, dict) and key in raw:
+                        raw = raw[key]
+                        break
+                df = pd.json_normalize(raw if isinstance(raw, list) else [raw])
+            else:
+                raise ValueError("Unsupported dataset format")
+        finally:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+
+        logger.info("Dataset loaded: shape=%s", df.shape)
+        logger.info("Columns: %s", df.columns.tolist())
+
+        # ---------- COLUMN CONTROL ----------
+        original_cols = set(df.columns)
+
+        use_cols = (
+            [c.strip() for c in args.use_column.split(",") if c.strip()]
+            if args.use_column else None
+        )
+
+        drop_cols = (
+            [c.strip() for c in args.drop_columns.split(",") if c.strip()]
+            if args.drop_columns else []
+        )
+
+        if use_cols:
+            missing = [c for c in use_cols if c not in df.columns]
+            if missing:
+                raise ValueError(
+                    f"use_column contains missing columns: {missing}. "
+                    f"Available columns: {list(df.columns)}"
+                )
+            df = df[use_cols]
+            logger.info("use_column applied: %s", use_cols)
+
+        if drop_cols:
+            existing = [c for c in drop_cols if c in df.columns]
+            df = df.drop(columns=existing, errors="ignore")
+            logger.info("drop_columns applied: %s", existing)
+
+        logger.info(
+            "Final columns (%d): %s | Removed: %s",
+            len(df.columns),
+            df.columns.tolist(),
+            list(original_cols - set(df.columns))
+        )
+
+        # ---------- Save ----------
+        os.makedirs(os.path.dirname(args.dataset) or ".", exist_ok=True)
+        df.to_parquet(args.dataset, index=False)
+
+        logger.info("Dataset saved successfully: %s", args.dataset)
+
+    args:
+      - --cdn_url
+      - {inputValue: cdn_url}
+      - --use_column
+      - {inputValue: use_column}
+      - --drop_columns
+      - {inputValue: drop_columns}
+      - --dataset
+      - {outputPath: dataset}
