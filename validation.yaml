@@ -1,4 +1,4 @@
-name: Anomaly Detection Validation v1.2
+name: Anomaly Detection Validation v1.3
 inputs:
   - {name: trained_model, type: Model, description: "Trained model (Isolation Forest or RCF)"}
   - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
@@ -247,9 +247,9 @@ implementation:
                 output_df.insert(3, 'prediction', predictions)
             
             # Save outputs
-            ensure_dir_for(args.predictions)
-            ensure_dir_for(args.validation_metadata)
-            
+            os.makedirs(os.path.dirname(args.predictions) or '.', exist_ok=True)
+            os.makedirs(os.path.dirname(args.validation_metadata) or '.', exist_ok=True)
+   
             output_df.to_parquet(args.predictions, index=False)
             print(f"[INFO] Saved predictions to: {args.predictions}")
             
