@@ -1,4 +1,4 @@
-name: Anomaly Detection Validation v1.7
+name: Anomaly Detection Validation v1.8
 inputs:
   - {name: trained_model, type: Model, description: "Trained model (Isolation Forest or RCF)"}
   - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
@@ -32,7 +32,6 @@ implementation:
         warnings.filterwarnings('ignore')
         
         def ensure_dir_for(p):
-            """Ensure parent directory exists for given path."""
             d = os.path.dirname(p)
             if d and not os.path.exists(d):
                 os.makedirs(d, exist_ok=True)
