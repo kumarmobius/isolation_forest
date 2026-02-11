@@ -1,4 +1,4 @@
-name: Anomaly Detection Training v3.0
+name: Anomaly Detection Training v3.1
 inputs:
   - {name: preprocessed_data, type: Dataset, description: "Preprocessed features from preprocessing step"}
   - {name: model_name, type: String, description: "Model type: 'isolationforest', 'eif', 'extendisolationforest', or 'rcf'", optional: true, default: "isolationforest"}
@@ -164,7 +164,6 @@ implementation:
         
         # ==================== EXTENDED ISOLATION FOREST (EIF) ====================
         def train_eif(X, args, feature_names, verbose):
-            """Train Extended Isolation Forest using isotree"""
             try:
                 from isotree import IsolationForest as IsoTreeIF
             except ImportError:
@@ -258,7 +257,6 @@ implementation:
         
         # ==================== RCF TRAINING ====================
         def train_rcf(X, num_trees, tree_size, shingle_size, percentile, random_state, verbose):
-            """Train Random Cut Forest"""
             try:
                 import rrcf
             except ImportError:
@@ -310,7 +308,6 @@ implementation:
         
         # ==================== SKLEARN ISOLATION FOREST ====================
         def train_isolation_forest(X, feature_names, args):
-            """Train sklearn Isolation Forest"""
             bootstrap = str(args.bootstrap).lower() in ("1", "true", "t", "yes", "y")
             warm_start = str(args.warm_start).lower() in ("1", "true", "t", "yes", "y")
             
