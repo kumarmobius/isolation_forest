@@ -1,6 +1,6 @@
-name: Anomaly Detection Validation v2.1
+name: Anomaly Detection Validation v3.0
 inputs:
-  - {name: trained_model, type: Model, description: "Trained model (Isolation Forest or RCF)"}
+  - {name: trained_model, type: Model, description: "Trained model (Isolation Forest, EIF, or RCF)"}
   - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
   - {name: validation_data, type: Dataset, description: "Dataset to validate/predict on"}
   - {name: include_scores, type: String, description: "true/false - Include anomaly scores in output", optional: true, default: "true"}
@@ -19,6 +19,7 @@ implementation:
       - |
         PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location \
           'rrcf>=0.4.4' \
+          'isotree>=0.5.0' \
           'scipy>=1.11.0'
         exec "$0" "$@"
       - python3
@@ -43,15 +44,50 @@ implementation:
                     model_artifact = cloudpickle.load(f)
                 
                 # Detect model type
-                if isinstance(model_artifact, dict) and 'forest' in model_artifact:
-                    # RCF model
-                    return model_artifact, 'rcf'
+                if isinstance(model_artifact, dict):
+                    if 'model_type' in model_artifact:
+                        # EIF or RCF with model_type field
+                        model_type = model_artifact['model_type']
+                        return model_artifact, model_type
+                    elif 'forest' in model_artifact:
+                        # RCF model (legacy)
+                        return model_artifact, 'rcf'
+                    else:
+                        # Unknown dict structure
+                        print("[WARNING] Unknown model artifact structure, defaulting to isolationforest")
+                        return model_artifact, 'isolationforest'
                 else:
-                    # Isolation Forest
+                    # sklearn Isolation Forest
                     return model_artifact, 'isolationforest'
+                    
             except Exception as e:
                 print(f"[ERROR] Failed to load model: {e}", file=sys.stderr)
                 raise
+        
+        def predict_eif(eif_artifact, X, verbose=False):
+            try:
+                from isotree import IsolationForest as IsoTreeIF
+            except ImportError:
+                print("[INFO] Installing isotree library...")
+                import subprocess
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "isotree", "--break-system-packages", "--quiet"])
+                from isotree import IsolationForest as IsoTreeIF
+            
+            model = eif_artifact['model']
+            threshold = eif_artifact['threshold']
+            
+            print(f"[INFO] EIF model loaded with threshold={threshold:.6f}")
+            print(f"[INFO] Running EIF prediction on {X.shape[0]} samples...")
+            
+            # Get anomaly scores
+            scores = model.predict(X)
+            
+            # Classify based on threshold
+            predictions = np.where(scores > threshold, -1, 1)
+            
+            print(f"[INFO] Prediction complete")
+            
+            return scores, predictions
         
         def predict_rcf(rcf_artifact, X, verbose=False):
             try:
@@ -59,7 +95,7 @@ implementation:
             except ImportError:
                 print("[INFO] Installing rrcf library...")
                 import subprocess
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "rrcf", "--break-system-packages"])
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "rrcf", "--break-system-packages", "--quiet"])
                 import rrcf
             
             forest = rcf_artifact['forest']
@@ -75,16 +111,13 @@ implementation:
             
             # Calculate average CoDisp across all trees
             for tree_idx, tree in enumerate(forest):
-                # For each point, check if it exists in tree and calculate codisp
                 for point_idx in range(n_samples):
-                    # Insert point temporarily to get codisp
                     try:
                         tree.insert_point(X[point_idx], index=point_idx)
                         codisp = tree.codisp(point_idx)
                         avg_codisp[point_idx] += codisp
                         tree.forget_point(point_idx)
                     except:
-                        # If point already exists or error, skip
                         pass
                 
                 if verbose and (tree_idx + 1) % 10 == 0:
@@ -156,7 +189,7 @@ implementation:
 
         try:
             print("="*80)
-            print("ANOMALY DETECTION VALIDATION v1.8")
+            print("ANOMALY DETECTION VALIDATION v3.0")
             print("="*80)
             
             include_scores = str(args.include_scores).lower() in ("1", "true", "t", "yes", "y")
@@ -208,10 +241,15 @@ implementation:
             import time
             start_time = time.time()
             
-            if model_type == 'rcf':
+            if model_type == 'eif':
+                scores, predictions = predict_eif(model_artifact, X, verbose=True)
+            elif model_type == 'rcf':
                 scores, predictions = predict_rcf(model_artifact, X, verbose=True)
-            else:
+            elif model_type == 'isolationforest':
                 scores, predictions = predict_isolation_forest(model_artifact, X, verbose=True)
+            else:
+                print(f"[ERROR] Unknown model type: {model_type}", file=sys.stderr)
+                sys.exit(1)
             
             prediction_time = time.time() - start_time
             print(f"[INFO] Prediction completed in {prediction_time:.2f} seconds")
@@ -262,14 +300,11 @@ implementation:
                 'training_metadata': training_meta if training_meta else None
             }
             
-            # CRITICAL FIX: Save outputs directly to the specified paths
+            # Save outputs
             print("[OUTPUT] Saving predictions...")
             print(f"[INFO] Saving predictions to: {args.predictions}")
             
-            # Ensure parent directory exists
             ensure_dir_for(args.predictions)
-            
-            # Save predictions directly to the output path
             output_df.to_parquet(args.predictions, index=False)
             
             if os.path.exists(args.predictions):
@@ -278,14 +313,11 @@ implementation:
             else:
                 raise FileNotFoundError(f"Failed to save predictions to {args.predictions}")
             
-            # Save metadata
             print("[OUTPUT] Saving validation metadata...")
             print(f"[INFO] Saving metadata to: {args.validation_metadata}")
             
-            # Ensure parent directory exists
             ensure_dir_for(args.validation_metadata)
             
-            # Save metadata directly to the output path
             with open(args.validation_metadata, 'w') as f:
                 json.dump(validation_meta, f, indent=2)
             
