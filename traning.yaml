@@ -1,29 +1,38 @@
-name: Anomaly Detection Training v2.5
+name: Anomaly Detection Training v3.0
 inputs:
   - {name: preprocessed_data, type: Dataset, description: "Preprocessed features from preprocessing step"}
-  - {name: model_name, type: String, description: "Model type: 'isolationforest' or 'rcf'", optional: true, default: "isolationforest"}
+  - {name: model_name, type: String, description: "Model type: 'isolationforest', 'eif', 'extendisolationforest', or 'rcf'", optional: true, default: "isolationforest"}
   
-  # Isolation Forest parameters
-  - {name: n_estimators, type: Integer, description: "Number of base estimators (trees) - IsolationForest only", optional: true, default: "100"}
-  - {name: max_samples, type: String, description: "Number of samples to draw: 'auto', integer, or float (0.0-1.0) - IsolationForest only", optional: true, default: "auto"}
-  - {name: contamination, type: String, description: "Proportion of outliers: 'auto', or float (0.0-0.5) - IsolationForest only", optional: true, default: "auto"}
-  - {name: max_features, type: Float, description: "Number of features to draw: float (0.0-1.0) or 1.0 for all - IsolationForest only", optional: true, default: "1.0"}
-  - {name: bootstrap, type: String, description: "true/false - Whether to use bootstrap sampling - IsolationForest only", optional: true, default: "false"}
+  # Isolation Forest (sklearn) parameters
+  - {name: n_estimators, type: Integer, description: "Number of trees - IsolationForest only", optional: true, default: "100"}
+  - {name: max_samples, type: String, description: "Samples per tree: 'auto', integer, or float (0.0-1.0) - IsolationForest only", optional: true, default: "auto"}
+  - {name: contamination, type: String, description: "Outlier proportion: 'auto' or float (0.0-0.5) - IsolationForest only", optional: true, default: "auto"}
+  - {name: max_features, type: Float, description: "Features per split: float (0.0-1.0) - IsolationForest only", optional: true, default: "1.0"}
+  - {name: bootstrap, type: String, description: "true/false - Bootstrap sampling - IsolationForest only", optional: true, default: "false"}
+  
+  # Extended Isolation Forest (isotree) parameters
+  - {name: ntrees, type: Integer, description: "Number of trees - EIF only", optional: true, default: "100"}
+  - {name: sample_size, type: Integer, description: "Samples per tree - EIF only", optional: true, default: "256"}
+  - {name: extension_level, type: Integer, description: "Extension level (0=standard IF, >0=EIF) - EIF only", optional: true, default: "1"}
+  - {name: ndim, type: Integer, description: "Dimensions for splits (1-3, or features count) - EIF only", optional: true, default: "1"}
+  - {name: missing_action, type: String, description: "How to handle missing: 'auto', 'impute', 'divide' - EIF only", optional: true, default: "auto"}
+  - {name: scoring_metric, type: String, description: "Scoring: 'depth', 'adj_depth', 'density' - EIF only", optional: true, default: "depth"}
+  - {name: max_depth, type: String, description: "Max tree depth: 'auto' or integer - EIF only", optional: true, default: "auto"}
   
   # RCF parameters
-  - {name: num_trees, type: Integer, description: "Number of trees in forest - RCF only", optional: true, default: "100"}
-  - {name: tree_size, type: Integer, description: "Number of samples in each tree - RCF only", optional: true, default: "256"}
+  - {name: num_trees, type: Integer, description: "Number of trees - RCF only", optional: true, default: "100"}
+  - {name: tree_size, type: Integer, description: "Samples per tree - RCF only", optional: true, default: "256"}
   - {name: shingle_size, type: Integer, description: "Shingle size for time series - RCF only", optional: true, default: "1"}
-  - {name: percentile, type: Float, description: "Percentile for threshold calculation (0.0-100.0) - RCF only", optional: true, default: "95.0"}
+  - {name: percentile, type: Float, description: "Threshold percentile (0.0-100.0) - RCF only", optional: true, default: "95.0"}
   
   # Common parameters
-  - {name: n_jobs, type: Integer, description: "Number of parallel jobs (-1 for all cores)", optional: true, default: "-1"}
-  - {name: random_state, type: Integer, description: "Random seed for reproducibility", optional: true, default: "42"}
-  - {name: verbose, type: Integer, description: "Verbosity level (0=silent, 1=progress, 2=detailed)", optional: true, default: "0"}
-  - {name: warm_start, type: String, description: "true/false - Reuse solution of previous call to fit - IsolationForest only", optional: true, default: "false"}
+  - {name: n_jobs, type: Integer, description: "Parallel jobs (-1 for all cores)", optional: true, default: "-1"}
+  - {name: random_state, type: Integer, description: "Random seed", optional: true, default: "42"}
+  - {name: verbose, type: Integer, description: "Verbosity (0=silent, 1=progress, 2=detailed)", optional: true, default: "0"}
+  - {name: warm_start, type: String, description: "true/false - Reuse previous fit - IsolationForest only", optional: true, default: "false"}
   
 outputs:
-  - {name: trained_model, type: Model, description: "Trained model (cloudpickle for IF, pickle for RCF)"}
+  - {name: trained_model, type: Model, description: "Trained model (cloudpickle)"}
   - {name: training_metadata, type: Data, description: "JSON metadata with training statistics"}
   - {name: anomaly_scores, type: Dataset, description: "Training data with anomaly scores and predictions"}
 
@@ -36,13 +45,14 @@ implementation:
       - |
         PIP_DISABLE_PIP_VERSION_CHECK=1 python3 -m pip install --quiet --no-warn-script-location \
           'rrcf>=0.4.4' \
+          'isotree>=0.5.0' \
           'scipy>=1.11.0'
         exec "$0" "$@"
       - python3
       - -u
       - -c
       - |
-        import argparse, os, sys, json, traceback, gzip, pickle, warnings
+        import argparse, os, sys, json, traceback, gzip, warnings
         from datetime import datetime
         import cloudpickle
         import pandas as pd, numpy as np
@@ -59,7 +69,6 @@ implementation:
         def parse_max_samples(value_str, n_samples):
             if value_str == 'auto':
                 return 'auto'
-            
             try:
                 val = int(value_str)
                 if val > 0 and val <= n_samples:
@@ -69,7 +78,6 @@ implementation:
                     return 'auto'
             except ValueError:
                 pass
-            
             try:
                 val = float(value_str)
                 if 0.0 < val <= 1.0:
@@ -84,7 +92,6 @@ implementation:
         def parse_contamination(value_str):
             if value_str == 'auto':
                 return 'auto'
-            
             try:
                 val = float(value_str)
                 if 0.0 < val <= 0.5:
@@ -98,14 +105,10 @@ implementation:
         
         def calculate_anomaly_statistics(scores, predictions):
             stats = {}
-            
-            # Basic counts
             stats['total_samples'] = len(predictions)
             stats['normal_count'] = int((predictions == 1).sum())
             stats['anomaly_count'] = int((predictions == -1).sum())
             stats['anomaly_percentage'] = float(stats['anomaly_count'] / stats['total_samples'] * 100)
-            
-            # Score statistics
             stats['score_mean'] = float(np.mean(scores))
             stats['score_std'] = float(np.std(scores))
             stats['score_min'] = float(np.min(scores))
@@ -114,7 +117,6 @@ implementation:
             stats['score_q25'] = float(np.percentile(scores, 25))
             stats['score_q75'] = float(np.percentile(scores, 75))
             
-            # Anomaly score statistics
             anomaly_scores = scores[predictions == -1]
             if len(anomaly_scores) > 0:
                 stats['anomaly_score_mean'] = float(np.mean(anomaly_scores))
@@ -127,7 +129,6 @@ implementation:
                 stats['anomaly_score_min'] = None
                 stats['anomaly_score_max'] = None
             
-            # Normal score statistics
             normal_scores = scores[predictions == 1]
             if len(normal_scores) > 0:
                 stats['normal_score_mean'] = float(np.mean(normal_scores))
@@ -144,10 +145,8 @@ implementation:
         
         def get_feature_importance_proxy_if(model, feature_names, X):
             print("[INFO] Calculating feature importance (may take a moment)...")
-            
             base_scores = model.decision_function(X)
             importances = {}
-            
             n_samples = min(1000, len(X))
             indices = np.random.choice(len(X), n_samples, replace=False)
             X_sample = X[indices]
@@ -157,39 +156,128 @@ implementation:
                 X_shuffled = X_sample.copy()
                 np.random.shuffle(X_shuffled[:, i])
                 shuffled_scores = model.decision_function(X_shuffled)
-                
                 importance = np.mean(np.abs(shuffled_scores - base_scores_sample))
                 importances[feature] = float(importance)
             
             sorted_importances = dict(sorted(importances.items(), key=lambda x: x[1], reverse=True))
-            
             return sorted_importances
+        
+        # ==================== EXTENDED ISOLATION FOREST (EIF) ====================
+        def train_eif(X, args, feature_names, verbose):
+            """Train Extended Isolation Forest using isotree"""
+            try:
+                from isotree import IsolationForest as IsoTreeIF
+            except ImportError:
+                print("[INFO] Installing isotree library...")
+                import subprocess
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "isotree", "--break-system-packages", "--quiet"])
+                from isotree import IsolationForest as IsoTreeIF
+            
+            print(f"[INFO] Building Extended Isolation Forest with {args.ntrees} trees")
+            
+            # Parse max_depth
+            if args.max_depth == 'auto':
+                max_depth = None
+            else:
+                try:
+                    max_depth = int(args.max_depth)
+                except:
+                    print(f"[WARNING] Invalid max_depth '{args.max_depth}', using 'auto'")
+                    max_depth = None
+            
+            # Build EIF model
+            model_params = {
+                'ntrees': args.ntrees,
+                'sample_size': args.sample_size,
+                'ndim': args.ndim,
+                'missing_action': args.missing_action,
+                'scoring_metric': args.scoring_metric,
+                'random_seed': args.random_state,
+                'nthreads': args.n_jobs if args.n_jobs > 0 else -1
+            }
+            
+            # Add extension_level if > 0
+            if args.extension_level > 0:
+                model_params['ntry'] = args.extension_level
+                print(f"[INFO] Using Extended IF mode with extension_level={args.extension_level}")
+            
+            if max_depth is not None:
+                model_params['max_depth'] = max_depth
+            
+            print(f"[INFO] EIF parameters:")
+            for param, value in model_params.items():
+                print(f"  - {param}: {value}")
+            
+            model = IsoTreeIF(**model_params)
+            
+            # Train model
+            print(f"[INFO] Training Extended Isolation Forest...")
+            import time
+            start_time = time.time()
+            
+            model.fit(X)
+            
+            training_time = time.time() - start_time
+            print(f"[INFO] Training completed in {training_time:.2f} seconds")
+            
+            # Get anomaly scores
+            print(f"[INFO] Calculating anomaly scores...")
+            anomaly_scores = model.predict(X)
+            
+            # Calculate threshold (similar to contamination)
+            threshold = np.percentile(anomaly_scores, 95.0)  # Default 95th percentile
+            predictions = np.where(anomaly_scores > threshold, -1, 1)
+            
+            # Feature importance (if available)
+            feature_importances = {}
+            try:
+                if hasattr(model, 'get_feature_importances'):
+                    importances_arr = model.get_feature_importances()
+                    for i, imp in enumerate(importances_arr[:min(50, len(feature_names))]):
+                        feature_importances[feature_names[i]] = float(imp)
+                    
+                    sorted_importances = dict(sorted(feature_importances.items(), key=lambda x: x[1], reverse=True))
+                    print(f"[INFO] Top 5 most important features:")
+                    for i, (feat, imp) in enumerate(list(sorted_importances.items())[:5]):
+                        print(f"  {i+1}. {feat}: {imp:.6f}")
+                    feature_importances = sorted_importances
+            except Exception as e:
+                print(f"[WARNING] Could not calculate feature importance: {e}")
+            
+            # Create EIF artifact for saving
+            eif_artifact = {
+                "model": model,
+                "threshold": threshold,
+                "model_params": model_params,
+                "feature_names": feature_names,
+                "n_features": X.shape[1],
+                "model_type": "eif"
+            }
+            
+            return eif_artifact, anomaly_scores, predictions, feature_importances, model_params, training_time
         
         # ==================== RCF TRAINING ====================
         def train_rcf(X, num_trees, tree_size, shingle_size, percentile, random_state, verbose):
+            """Train Random Cut Forest"""
             try:
                 import rrcf
             except ImportError:
-                print("[ERROR] rrcf library not installed. Installing...", file=sys.stderr)
+                print("[INFO] Installing rrcf library...")
                 import subprocess
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "rrcf", "--break-system-packages"])
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "rrcf", "--break-system-packages", "--quiet"])
                 import rrcf
+            
             print(f"[INFO] Building RCF with {num_trees} trees, tree_size={tree_size}")
             
             np.random.seed(random_state)
             forest = []
-            
             n_samples = X.shape[0]
             
             # Build forest
             for tree_idx in range(num_trees):
-                # Sample data points for this tree
                 sample_indices = np.random.choice(n_samples, size=min(tree_size, n_samples), replace=False)
-                
-                # Create tree
                 tree = rrcf.RCTree()
                 
-                # Insert points
                 for idx in sample_indices:
                     tree.insert_point(X[idx], index=idx)
                 
@@ -200,7 +288,7 @@ implementation:
             
             print(f"[INFO] RCF forest built successfully with {len(forest)} trees")
             
-            # Calculate anomaly scores (CoDisp)
+            # Calculate anomaly scores
             print(f"[INFO] Calculating anomaly scores for {n_samples} samples...")
             avg_codisp = np.zeros(n_samples)
             
@@ -213,16 +301,16 @@ implementation:
                     print(f"[INFO] Scored with {tree_idx + 1}/{num_trees} trees")
             
             avg_codisp /= num_trees
-            
-            # Calculate threshold based on percentile
             threshold = np.percentile(avg_codisp, percentile)
             print(f"[INFO] Threshold at {percentile}th percentile: {threshold:.6f}")
             
-            # Predict anomalies
             predictions = np.where(avg_codisp > threshold, -1, 1)
             
             return forest, avg_codisp, predictions, threshold
-        def train_isolation_forest(X, feature_names, args):            
+        
+        # ==================== SKLEARN ISOLATION FOREST ====================
+        def train_isolation_forest(X, feature_names, args):
+            """Train sklearn Isolation Forest"""
             bootstrap = str(args.bootstrap).lower() in ("1", "true", "t", "yes", "y")
             warm_start = str(args.warm_start).lower() in ("1", "true", "t", "yes", "y")
             
@@ -262,11 +350,9 @@ implementation:
             
             print(f"[INFO] Training completed in {training_time:.2f} seconds")
             
-            # Calculate scores
             anomaly_scores = model.decision_function(X)
             predictions = model.predict(X)
             
-            # Feature importance
             feature_importances = {}
             if len(feature_names) <= 100:
                 try:
@@ -281,18 +367,27 @@ implementation:
             
             return model, anomaly_scores, predictions, feature_importances, model_params, training_time
         
-        # Main execution
+        # ==================== MAIN EXECUTION ====================
         parser = argparse.ArgumentParser()
         parser.add_argument('--preprocessed_data', type=str, required=True)
         parser.add_argument('--model_name', type=str, default='isolationforest')
         
-        # Isolation Forest params
+        # Sklearn IF params
         parser.add_argument('--n_estimators', type=int, default=100)
         parser.add_argument('--max_samples', type=str, default='auto')
         parser.add_argument('--contamination', type=str, default='auto')
         parser.add_argument('--max_features', type=float, default=1.0)
         parser.add_argument('--bootstrap', type=str, default='false')
         parser.add_argument('--warm_start', type=str, default='false')
+        
+        # EIF params
+        parser.add_argument('--ntrees', type=int, default=100)
+        parser.add_argument('--sample_size', type=int, default=256)
+        parser.add_argument('--extension_level', type=int, default=1)
+        parser.add_argument('--ndim', type=int, default=1)
+        parser.add_argument('--missing_action', type=str, default='auto')
+        parser.add_argument('--scoring_metric', type=str, default='depth')
+        parser.add_argument('--max_depth', type=str, default='auto')
         
         # RCF params
         parser.add_argument('--num_trees', type=int, default=100)
@@ -313,10 +408,14 @@ implementation:
 
         try:
             print("="*80)
-            print("ANOMALY DETECTION TRAINING v2.0")
+            print("ANOMALY DETECTION TRAINING v3.0")
             print("="*80)
             
             model_name = args.model_name.lower().strip()
+            # Normalize model names
+            if model_name in ['eif', 'extendisolationforest', 'extended_isolation_forest']:
+                model_name = 'eif'
+            
             print(f"[INFO] Selected model: {model_name.upper()}")
             
             # Load data
@@ -355,22 +454,22 @@ implementation:
             import time
             start_time = time.time()
             
-            if model_name == 'rcf':
+            if model_name == 'eif':
+                # Train Extended Isolation Forest
+                model_artifact, anomaly_scores, predictions, feature_importances, model_params, training_time = train_eif(
+                    X, args, feature_names, args.verbose
+                )
+                
+            elif model_name == 'rcf':
                 # Train RCF
                 forest, anomaly_scores, predictions, threshold = train_rcf(
-                    X, 
-                    args.num_trees, 
-                    args.tree_size, 
-                    args.shingle_size, 
-                    args.percentile,
-                    args.random_state,
-                    args.verbose
+                    X, args.num_trees, args.tree_size, args.shingle_size, 
+                    args.percentile, args.random_state, args.verbose
                 )
                 
                 training_time = time.time() - start_time
                 
-                # Create RCF artifact
-                rcf_artifact = {
+                model_artifact = {
                     "forest": forest,
                     "threshold": threshold,
                     "num_trees": len(forest),
@@ -379,7 +478,8 @@ implementation:
                     "percentile": args.percentile,
                     "random_state": args.random_state,
                     "feature_names": feature_names,
-                    "n_features": X.shape[1]
+                    "n_features": X.shape[1],
+                    "model_type": "rcf"
                 }
                 
                 model_params = {
@@ -391,17 +491,16 @@ implementation:
                 }
                 
                 feature_importances = None
-                model_artifact = rcf_artifact
                 
             elif model_name == 'isolationforest':
-                # Train Isolation Forest
+                # Train sklearn Isolation Forest
                 model, anomaly_scores, predictions, feature_importances, model_params, training_time = train_isolation_forest(
                     X, feature_names, args
                 )
                 model_artifact = model
                 
             else:
-                print(f"[ERROR] Unknown model_name: {model_name}. Use 'isolationforest' or 'rcf'", file=sys.stderr)
+                print(f"[ERROR] Unknown model_name: {model_name}. Use 'isolationforest', 'eif', or 'rcf'", file=sys.stderr)
                 sys.exit(1)
             
             # Calculate statistics
@@ -428,7 +527,7 @@ implementation:
             ensure_dir_for(args.training_metadata)
             ensure_dir_for(args.anomaly_scores)
             
-            # Save model
+            # Save model with cloudpickle
             with gzip.open(args.trained_model, 'wb') as f:
                 cloudpickle.dump(model_artifact, f)
             print(f"[INFO] Saved {model_name.upper()} model to: {args.trained_model}")
@@ -441,7 +540,7 @@ implementation:
             print("[STEP 6/6] Saving metadata...")
             metadata = {
                 'timestamp': datetime.utcnow().isoformat() + 'Z',
-                'version': '2.0',
+                'version': '3.0',
                 'model_type': model_name,
                 'training_time_seconds': float(training_time),
                 'model_parameters': model_params,
@@ -456,8 +555,13 @@ implementation:
             
             if model_name == 'rcf':
                 metadata['anomaly_thresholds'] = {
-                    'threshold': float(threshold),
+                    'threshold': float(model_artifact['threshold']),
                     'percentile': float(args.percentile)
+                }
+            elif model_name == 'eif':
+                metadata['anomaly_thresholds'] = {
+                    'threshold': float(model_artifact['threshold']),
+                    'percentile': 95.0
                 }
             else:
                 contamination_val = parse_contamination(args.contamination)
@@ -480,10 +584,15 @@ implementation:
             print(f"Features used:          {data.shape[1]}")
             print(f"Training time:          {training_time:.2f}s")
             
-            if model_name == 'rcf':
+            if model_name == 'eif':
+                print(f"Trees in forest:        {args.ntrees}")
+                print(f"Sample size per tree:   {args.sample_size}")
+                print(f"Extension level:        {args.extension_level}")
+                print(f"Scoring metric:         {args.scoring_metric}")
+            elif model_name == 'rcf':
                 print(f"Trees in forest:        {args.num_trees}")
                 print(f"Tree size:              {args.tree_size}")
-                print(f"Threshold (percentile): {threshold:.6f} ({args.percentile}%)")
+                print(f"Threshold (percentile): {model_artifact['threshold']:.6f} ({args.percentile}%)")
             else:
                 print(f"Trees in ensemble:      {args.n_estimators}")
                 print(f"Contamination:          {parse_contamination(args.contamination)}")
@@ -521,6 +630,20 @@ implementation:
       - {inputValue: bootstrap}
       - --warm_start
       - {inputValue: warm_start}
+      - --ntrees
+      - {inputValue: ntrees}
+      - --sample_size
+      - {inputValue: sample_size}
+      - --extension_level
+      - {inputValue: extension_level}
+      - --ndim
+      - {inputValue: ndim}
+      - --missing_action
+      - {inputValue: missing_action}
+      - --scoring_metric
+      - {inputValue: scoring_metric}
+      - --max_depth
+      - {inputValue: max_depth}
       - --num_trees
       - {inputValue: num_trees}
       - --tree_size
