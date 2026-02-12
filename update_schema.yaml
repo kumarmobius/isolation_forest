@@ -1,0 +1,154 @@
+name: Update Schema Row v10
+inputs:
+  - { name: schema_id, type: String }
+  - { name: schema_json, type: String, description: "JSON object or array of objects to insert" }
+  - { name: model_id, type: String, optional: true, default: "-1" }
+  - { name: execution_id, type: Integer }
+  - { name: tenant_id, type: string, optional: true, default: "-1" }
+  - { name: project_id, type: String, optional: true, default: "-1" }
+  - { name: architecture_type, type: String, optional: true, default: "-1" }
+  - { name: bearer_auth_token, type: string }
+  - { name: domain, type: String }
+
+implementation:
+  container:
+    image: gurpreetgandhi/nesy-factory:vtest4
+    command:
+      - sh
+      - -c
+      - |
+        pip install --no-cache-dir requests urllib3 && exec "$0" "$@"
+      - python3
+      - -u
+      - -c
+      - |
+        import json
+        import argparse
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        import os
+        import sys
+
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--schema_id', type=str, required=True)
+        parser.add_argument('--schema_json', type=str, required=True)
+        parser.add_argument('--model_id', type=str, default="-1")
+        parser.add_argument('--execution_id', type=int, required=True)
+        parser.add_argument('--tenant_id', type=str, default="-1")
+        parser.add_argument('--project_id', type=str, default="-1")
+        parser.add_argument('--architecture_type', type=str, default="-1")
+        parser.add_argument('--bearer_auth_token', type=str, required=True)
+        parser.add_argument('--domain', type=str, required=True)
+
+        args = parser.parse_args()
+
+        # Helper function to check if value should be skipped
+        def should_skip(val):
+            return str(val).strip() == "-1"
+
+        # Read bearer token from file if it's a path
+        def read_file_if_path(path):
+            if path and os.path.exists(path):
+                with open(path, 'r') as f:
+                    return f.read().strip()
+            return path
+
+        bearer_token = read_file_if_path(args.bearer_auth_token)
+        tenant_id_value = read_file_if_path(args.tenant_id) if not should_skip(args.tenant_id) else None
+
+        # Parse schema_json
+        try:
+            schema_data = json.loads(args.schema_json)
+        except Exception as e:
+            print(f"ERROR: Invalid JSON in schema_json: {e}", file=sys.stderr)
+            sys.exit(1)
+
+        # Determine if single row or multiple rows
+        if isinstance(schema_data, list):
+            rows = schema_data
+        else:
+            rows = [schema_data]
+
+        print(f"[INFO] Processing {len(rows)} row(s)")
+
+        # Process each row
+        processed_rows = []
+        for idx, row in enumerate(rows):
+            # Start with the data from schema_json
+            processed_row = dict(row)
+            
+            # Always add execution_id
+            processed_row["execution_id"] = args.execution_id
+            
+            # Conditionally add other fields if they're not -1
+            if not should_skip(args.model_id):
+                processed_row["model_id"] = args.model_id
+            
+            if not should_skip(args.architecture_type):
+                processed_row["architecture_type"] = args.architecture_type
+            
+            if not should_skip(args.project_id):
+                processed_row["project_id"] = args.project_id
+            
+            if not should_skip(args.tenant_id) and tenant_id_value:
+                processed_row["tenant_id"] = tenant_id_value
+            
+            processed_rows.append(processed_row)
+            print(f"[DEBUG] Row {idx + 1}: {json.dumps(processed_row, indent=2)}")
+
+        # Setup HTTP session with retry logic
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {bearer_token}"
+        }
+
+        retry_strategy = Retry(
+            total=3,
+            status_forcelist=[408, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "PUT", "POST", "PATCH", "DELETE", "OPTIONS"],
+            backoff_factor=1
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        http = requests.Session()
+        http.mount("http://", adapter)
+        http.mount("https://", adapter)
+
+        # Post all rows to the schema
+        create_url = f"{args.domain.rstrip('/')}/pi-entity-instances-service/v2.0/schemas/{args.schema_id}/instances"
+        payload = {"data": processed_rows}
+
+        print(f"[INFO] Posting to: {create_url}")
+        print(f"[DEBUG] Payload: {json.dumps(payload, indent=2)}")
+
+        try:
+            resp = http.post(create_url, headers=headers, data=json.dumps(payload), timeout=60)
+            print(f"[INFO] Response status: {resp.status_code}")
+            print(resp.text)
+            resp.raise_for_status()
+            print(f"[SUCCESS] Posted {len(processed_rows)} row(s) to schema {args.schema_id}")
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Request failed: {e}", file=sys.stderr)
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"[ERROR] Response: {e.response.text}", file=sys.stderr)
+            sys.exit(1)
+
+    args:
+      - --schema_id
+      - {inputValue: schema_id}
+      - --schema_json
+      - {inputValue: schema_json}
+      - --model_id
+      - {inputValue: model_id}
+      - --execution_id
+      - {inputValue: execution_id}
+      - --tenant_id
+      - {inputPath: tenant_id}
+      - --project_id
+      - {inputValue: project_id}
+      - --architecture_type
+      - {inputValue: architecture_type}
+      - --bearer_auth_token
+      - {inputPath: bearer_auth_token}
+      - --domain
+      - {inputValue: domain}
