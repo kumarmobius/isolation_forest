@@ -1,10 +1,12 @@
-name: Anomaly Detection Validation v3.0
+name: Anomaly Detection Validation v3.1
 inputs:
   - {name: trained_model, type: Model, description: "Trained model (Isolation Forest, EIF, or RCF)"}
   - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
   - {name: validation_data, type: Dataset, description: "Dataset to validate/predict on"}
   - {name: include_scores, type: String, description: "true/false - Include anomaly scores in output", optional: true, default: "true"}
   - {name: output_format, type: String, description: "Format: 'simple' (index, label) or 'detailed' (index, label, score, features)", optional: true, default: "simple"}
+  - {name: tail_detection, type: String, description: "true/false - Use percentile-based tail detection instead of model threshold (IsolationForest only)", optional: true, default: "false"}
+  - {name: tail_percentile, type: Float, description: "Bottom percentile to flag as anomaly e.g. 5.0 = lowest 5% scores are anomalies (IsolationForest + tail_detection only)", optional: true, default: "5.0"}
 
 outputs:
   - {name: predictions, type: Dataset, description: "Predictions with index and anomaly classification"}
@@ -43,26 +45,51 @@ implementation:
                 with gzip.open(model_path, 'rb') as f:
                     model_artifact = cloudpickle.load(f)
                 
-                # Detect model type
                 if isinstance(model_artifact, dict):
                     if 'model_type' in model_artifact:
-                        # EIF or RCF with model_type field
-                        model_type = model_artifact['model_type']
-                        return model_artifact, model_type
+                        return model_artifact, model_artifact['model_type']
                     elif 'forest' in model_artifact:
-                        # RCF model (legacy)
                         return model_artifact, 'rcf'
                     else:
-                        # Unknown dict structure
                         print("[WARNING] Unknown model artifact structure, defaulting to isolationforest")
                         return model_artifact, 'isolationforest'
                 else:
-                    # sklearn Isolation Forest
                     return model_artifact, 'isolationforest'
                     
             except Exception as e:
                 print(f"[ERROR] Failed to load model: {e}", file=sys.stderr)
                 raise
+        
+        def predict_isolation_forest(model, X, tail_detection=False, tail_percentile=5.0, verbose=False):
+            print(f"[INFO] Running Isolation Forest prediction on {X.shape[0]} samples...")
+            
+            # Always get decision function scores
+            scores = model.decision_function(X)
+            
+            if tail_detection:
+                # Validate percentile
+                if not 0.0 < tail_percentile < 100.0:
+                    print(f"[WARNING] tail_percentile {tail_percentile} out of range (0-100), using 5.0")
+                    tail_percentile = 5.0
+                
+                # Threshold = bottom tail_percentile% of scores
+                # Lower scores = more anomalous in IF (decision_function is inverted)
+                threshold = np.percentile(scores, tail_percentile)
+                
+                # Points BELOW threshold are anomalies (most anomalous scores)
+                predictions = np.where(scores <= threshold, -1, 1)
+                
+                anomaly_count = int((predictions == -1).sum())
+                print(f"[INFO] Tail detection ON: threshold={threshold:.6f} at {tail_percentile}th percentile")
+                print(f"[INFO] Flagged {anomaly_count} anomalies ({tail_percentile:.1f}% of {len(scores)} samples)")
+            else:
+                # Use model's built-in contamination-based predict
+                predictions = model.predict(X)
+                print(f"[INFO] Standard prediction using model contamination threshold")
+            
+            print(f"[INFO] Prediction complete")
+            
+            return scores, predictions, threshold if tail_detection else None
         
         def predict_eif(eif_artifact, X, verbose=False):
             try:
@@ -79,10 +106,7 @@ implementation:
             print(f"[INFO] EIF model loaded with threshold={threshold:.6f}")
             print(f"[INFO] Running EIF prediction on {X.shape[0]} samples...")
             
-            # Get anomaly scores
             scores = model.predict(X)
-            
-            # Classify based on threshold
             predictions = np.where(scores > threshold, -1, 1)
             
             print(f"[INFO] Prediction complete")
@@ -109,7 +133,6 @@ implementation:
             
             print(f"[INFO] Calculating CoDisp scores for {n_samples} samples...")
             
-            # Calculate average CoDisp across all trees
             for tree_idx, tree in enumerate(forest):
                 for point_idx in range(n_samples):
                     try:
@@ -124,21 +147,9 @@ implementation:
                     print(f"[INFO] Scored with {tree_idx + 1}/{num_trees} trees")
             
             avg_codisp /= num_trees
-            
-            # Predict based on threshold
             predictions = np.where(avg_codisp > threshold, -1, 1)
             
             return avg_codisp, predictions
-        
-        def predict_isolation_forest(model, X, verbose=False):
-            print(f"[INFO] Running Isolation Forest prediction on {X.shape[0]} samples...")
-            
-            scores = model.decision_function(X)
-            predictions = model.predict(X)
-            
-            print(f"[INFO] Prediction complete")
-            
-            return scores, predictions
         
         def calculate_validation_stats(scores, predictions):
             stats = {}
@@ -153,6 +164,8 @@ implementation:
             stats['score_min'] = float(np.min(scores))
             stats['score_max'] = float(np.max(scores))
             stats['score_median'] = float(np.median(scores))
+            stats['score_q25'] = float(np.percentile(scores, 25))
+            stats['score_q75'] = float(np.percentile(scores, 75))
             
             anomaly_scores = scores[predictions == -1]
             if len(anomaly_scores) > 0:
@@ -183,17 +196,25 @@ implementation:
         parser.add_argument('--validation_data', type=str, required=True)
         parser.add_argument('--include_scores', type=str, default='true')
         parser.add_argument('--output_format', type=str, default='simple')
+        parser.add_argument('--tail_detection', type=str, default='false')
+        parser.add_argument('--tail_percentile', type=float, default=5.0)
         parser.add_argument('--predictions', type=str, required=True)
         parser.add_argument('--validation_metadata', type=str, required=True)
         args = parser.parse_args()
 
         try:
             print("="*80)
-            print("ANOMALY DETECTION VALIDATION v3.0")
+            print("ANOMALY DETECTION VALIDATION v3.1")
             print("="*80)
             
             include_scores = str(args.include_scores).lower() in ("1", "true", "t", "yes", "y")
             output_format = args.output_format.lower()
+            tail_detection = str(args.tail_detection).lower() in ("1", "true", "t", "yes", "y")
+            tail_percentile = args.tail_percentile
+            
+            print(f"[INFO] tail_detection: {tail_detection}")
+            if tail_detection:
+                print(f"[INFO] tail_percentile: {tail_percentile}%")
             
             # Load training metadata (optional)
             training_meta = {}
@@ -210,6 +231,11 @@ implementation:
             model_artifact, model_type = load_model(args.trained_model)
             print(f"[INFO] Model type detected: {model_type.upper()}")
             
+            # Warn if tail_detection used with non-IF model
+            if tail_detection and model_type != 'isolationforest':
+                print(f"[WARNING] tail_detection is only supported for IsolationForest, ignoring for {model_type.upper()}")
+                tail_detection = False
+            
             # Load validation data
             print("[STEP 3/6] Loading validation data...")
             data = pd.read_parquet(args.validation_data)
@@ -217,7 +243,6 @@ implementation:
             print(f"[INFO] Features: {data.shape[1]}")
             print(f"[INFO] Samples: {data.shape[0]}")
             
-            # Validate data
             if data.shape[0] == 0:
                 print("[ERROR] Empty dataset", file=sys.stderr)
                 sys.exit(1)
@@ -241,12 +266,19 @@ implementation:
             import time
             start_time = time.time()
             
+            tail_threshold_used = None
+            
             if model_type == 'eif':
                 scores, predictions = predict_eif(model_artifact, X, verbose=True)
             elif model_type == 'rcf':
                 scores, predictions = predict_rcf(model_artifact, X, verbose=True)
             elif model_type == 'isolationforest':
-                scores, predictions = predict_isolation_forest(model_artifact, X, verbose=True)
+                scores, predictions, tail_threshold_used = predict_isolation_forest(
+                    model_artifact, X,
+                    tail_detection=tail_detection,
+                    tail_percentile=tail_percentile,
+                    verbose=True
+                )
             else:
                 print(f"[ERROR] Unknown model type: {model_type}", file=sys.stderr)
                 sys.exit(1)
@@ -259,26 +291,23 @@ implementation:
             stats = calculate_validation_stats(scores, predictions)
             
             print(f"[INFO] Validation Results:")
-            print(f"  - Total samples: {stats['total_samples']}")
-            print(f"  - Normal samples: {stats['normal_count']} ({100 - stats['anomaly_percentage']:.2f}%)")
-            print(f"  - Anomalies detected: {stats['anomaly_count']} ({stats['anomaly_percentage']:.2f}%)")
-            print(f"  - Score range: [{stats['score_min']:.4f}, {stats['score_max']:.4f}]")
+            print(f"  - Total samples:    {stats['total_samples']}")
+            print(f"  - Normal samples:   {stats['normal_count']} ({100 - stats['anomaly_percentage']:.2f}%)")
+            print(f"  - Anomalies:        {stats['anomaly_count']} ({stats['anomaly_percentage']:.2f}%)")
+            print(f"  - Score range:      [{stats['score_min']:.4f}, {stats['score_max']:.4f}]")
             
             # Create output dataframe
             print("[STEP 6/6] Creating output dataset...")
             
             if output_format == 'simple':
-                # Simple format: index_no, classification
                 output_df = pd.DataFrame({
                     'index_no': range(len(predictions)),
                     'classification': ['anomaly' if p == -1 else 'not_anomaly' for p in predictions]
                 })
-                
                 if include_scores:
                     output_df['anomaly_score'] = scores
-                
-            else:  # detailed format
-                # Detailed format: index, classification, score, all features
+                    
+            else:  # detailed
                 output_df = data.copy()
                 output_df.insert(0, 'index_no', range(len(predictions)))
                 output_df.insert(1, 'classification', ['anomaly' if p == -1 else 'not_anomaly' for p in predictions])
@@ -290,6 +319,12 @@ implementation:
                 'timestamp': datetime.utcnow().isoformat() + 'Z',
                 'model_type': model_type,
                 'prediction_time_seconds': float(prediction_time),
+                'tail_detection': {
+                    'enabled': tail_detection,
+                    'tail_percentile': float(tail_percentile) if tail_detection else None,
+                    'tail_threshold': float(tail_threshold_used) if tail_threshold_used is not None else None,
+                    'note': 'IF decision_function: lower score = more anomalous. Tail flags bottom N% as anomaly.'
+                },
                 'validation_data_info': {
                     'n_samples': int(data.shape[0]),
                     'n_features': int(data.shape[1])
@@ -314,8 +349,6 @@ implementation:
                 raise FileNotFoundError(f"Failed to save predictions to {args.predictions}")
             
             print("[OUTPUT] Saving validation metadata...")
-            print(f"[INFO] Saving metadata to: {args.validation_metadata}")
-            
             ensure_dir_for(args.validation_metadata)
             
             with open(args.validation_metadata, 'w') as f:
@@ -337,6 +370,10 @@ implementation:
             print(f"Validation samples:     {data.shape[0]:,}")
             print(f"Prediction time:        {prediction_time:.2f}s")
             print(f"Output format:          {output_format}")
+            if tail_detection:
+                print(f"Tail detection:         ON ({tail_percentile}% threshold={tail_threshold_used:.6f})")
+            else:
+                print(f"Tail detection:         OFF (model default threshold)")
             print(f"")
             print(f"DETECTION RESULTS:")
             print(f"  Normal samples:       {stats['normal_count']:,} ({100 - stats['anomaly_percentage']:.2f}%)")
@@ -368,6 +405,10 @@ implementation:
       - {inputValue: include_scores}
       - --output_format
       - {inputValue: output_format}
+      - --tail_detection
+      - {inputValue: tail_detection}
+      - --tail_percentile
+      - {inputValue: tail_percentile}
       - --predictions
       - {outputPath: predictions}
       - --validation_metadata
