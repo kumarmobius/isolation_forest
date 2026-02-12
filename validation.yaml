@@ -1,4 +1,4 @@
-name: Anomaly Detection Validation v3.1
+name: Anomaly Detection Validation v3.2
 inputs:
   - {name: trained_model, type: Model, description: "Trained model (Isolation Forest, EIF, or RCF)"}
   - {name: training_metadata, type: Data, description: "Training metadata JSON file", optional: true}
@@ -7,11 +7,11 @@ inputs:
   - {name: output_format, type: String, description: "Format: 'simple' (index, label) or 'detailed' (index, label, score, features)", optional: true, default: "simple"}
   - {name: tail_detection, type: String, description: "true/false - Use percentile-based tail detection instead of model threshold (IsolationForest only)", optional: true, default: "false"}
   - {name: tail_percentile, type: Float, description: "Bottom percentile to flag as anomaly e.g. 5.0 = lowest 5% scores are anomalies (IsolationForest + tail_detection only)", optional: true, default: "5.0"}
-
+  - {name: model_name, type: String, description: "Model name label for schema output e.g. 'IF_v1', 'RCF_prod'", optional: true, default: "anomaly_model"}
 outputs:
   - {name: predictions, type: Dataset, description: "Predictions with index and anomaly classification"}
   - {name: validation_metadata, type: Data, description: "Validation statistics and metrics"}
-
+  - {name: schema_json, type: String, description: "Summary schema JSON with key metrics"}
 implementation:
   container:
     image: gurpreetgandhi/nesy-factory:vtest4
@@ -32,6 +32,7 @@ implementation:
         from datetime import datetime
         import pandas as pd, numpy as np
         import cloudpickle
+        import time as _time
         
         warnings.filterwarnings('ignore')
         
@@ -200,6 +201,8 @@ implementation:
         parser.add_argument('--tail_percentile', type=float, default=5.0)
         parser.add_argument('--predictions', type=str, required=True)
         parser.add_argument('--validation_metadata', type=str, required=True)
+        parser.add_argument('--model_name', type=str, default='anomaly_model')
+        parser.add_argument('--schema_json', type=str, required=True)
         args = parser.parse_args()
 
         try:
@@ -386,6 +389,29 @@ implementation:
             print("="*80)
             print("SUCCESS: Validation complete!")
             print("="*80)
+            schema = {
+                "timestamp": int(_time.time()),
+                "model_name": args.model_name,
+                "anomaly_percentage": round(stats['anomaly_percentage'], 4),
+                "anomaly_score_mean": round(stats['anomaly_score_mean'], 6) if stats['anomaly_score_mean'] is not None else None,
+                "normal_score_mean": round(stats['normal_score_mean'], 6) if stats['normal_score_mean'] is not None else None,
+                "gap": round(stats['normal_score_mean'] - stats['anomaly_score_mean'], 6)
+                       if stats['normal_score_mean'] is not None and stats['anomaly_score_mean'] is not None
+                       else None
+            }
+            
+            print(f"[INFO] Schema JSON:")
+            print(json.dumps(schema, indent=2))
+            
+            # Save schema_json
+            ensure_dir_for(args.schema_json)
+            with open(args.schema_json, 'w') as f:
+                json.dump(schema, f, indent=2)
+            
+            if os.path.exists(args.schema_json):
+                print(f"[SUCCESS] Schema JSON saved: {args.schema_json}")
+            else:
+                raise FileNotFoundError(f"Failed to save schema_json to {args.schema_json}")
             
         except Exception as exc:
             print("="*80, file=sys.stderr)
@@ -413,3 +439,7 @@ implementation:
       - {outputPath: predictions}
       - --validation_metadata
       - {outputPath: validation_metadata}
+      - --model_name
+      - {inputValue: model_name}
+      - --schema_json
+      - {outputPath: schema_json}
